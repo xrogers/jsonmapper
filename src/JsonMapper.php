@@ -48,6 +48,16 @@ class JsonMapper
     public $bExceptionOnMissingData = false;
 
     /**
+     * JSON mapper will look for this field in class to map keys between JSON and model.
+     * e.g.
+     *   JSON: {"bad_key_id":1}
+     *   Model: class Test { protected static $_json_key_map = ['bad_key_id' => 'id']; public $id; }
+     *
+     * @var string
+     */
+    public $sMappingMagicField = '_json_key_map';
+
+    /**
      * Runtime cache for inspected classes. This is particularly effective if
      * mapArray() is called with a large number of objects
      *
@@ -77,10 +87,10 @@ class JsonMapper
             // again for subsequent objects of the same type
             if (!isset($this->arInspectedClasses[$strClassName][$key])) {
                 $this->arInspectedClasses[$strClassName][$key]
-                    = $this->inspectProperty($rc, $key);
+                    = $this->inspectProperty($rc, $key, $object);
             }
 
-            list($hasProperty, $isSettable, $type, $setter)
+            list($hasProperty, $isSettable, $type, $setter, $newKey)
                 = $this->arInspectedClasses[$strClassName][$key];
 
             if (!$hasProperty) {
@@ -115,7 +125,7 @@ class JsonMapper
 
             if ($this->isNullable($type)) {
                 if ($jvalue === null) {
-                    $this->setProperty($object, $key, null, $setter);
+                    $this->setProperty($object, $newKey, null, $setter);
                     continue;
                 }
                 $type = $this->removeNullable($type);
@@ -123,11 +133,11 @@ class JsonMapper
 
             if ($type === null) {
                 //no given type - simply set the json data
-                $this->setProperty($object, $key, $jvalue, $setter);
+                $this->setProperty($object, $newKey, $jvalue, $setter);
                 continue;
             } else if ($this->isSimpleType($type)) {
                 settype($jvalue, $type);
-                $this->setProperty($object, $key, $jvalue, $setter);
+                $this->setProperty($object, $newKey, $jvalue, $setter);
                 continue;
             }
 
@@ -135,7 +145,7 @@ class JsonMapper
             if ($type === '') {
                 throw new JsonMapper_Exception(
                     'Empty type at property "'
-                    . $strClassName . '::$' . $key . '"'
+                    . $strClassName . '::$' . $newKey . '"'
                 );
             }
 
@@ -180,7 +190,7 @@ class JsonMapper
                 $child = new $type();
                 $this->map($jvalue, $child);
             }
-            $this->setProperty($object, $key, $child, $setter);
+            $this->setProperty($object, $newKey, $child, $setter);
         }
 
         if ($this->bExceptionOnMissingData) {
@@ -276,18 +286,61 @@ class JsonMapper
 
     /**
      * Try to find out if a property exists in a given class.
-     * Checks property first, falls back to setter method.
+     * Checks mapped key value, then checks setter method and falls back to property.
      *
-     * @param object $rc   Reflection class to check
+     * @param ReflectionClass $rc   Reflection class to check
      * @param string $name Property name
      *
      * @return array First value: if the property exists
      *               Second value: is the property settable
      *               Third value: type of the property
      *               Fourth value: the setter to use, otherwise null
+     *               Fifth value: the name of the property (could be changed if map exists)
      */
     protected function inspectProperty(ReflectionClass $rc, $name)
     {
+        if ($rc->hasProperty($this->sMappingMagicField)) {
+            $keymapprop = $rc->getProperty($this->sMappingMagicField);
+            $keymapprop->setAccessible(true);
+            $keymap = $keymapprop->getValue();
+
+            if (is_array($keymap) && isset($keymap[$name])) {
+                $name = $keymap[$name];
+            }
+        }
+
+        // Parameter could not be directly set, so lets go for setter methods
+        $setter = 'set' . ucfirst($name);
+
+        if ($rc->hasMethod($setter)) {
+
+            $rmeth = $rc->getMethod($setter);
+            if ($rmeth->isPublic()) {
+
+                $rparams = $rmeth->getParameters();
+
+                if (count($rparams) > 0) {
+                    $pclass = $rparams[0]->getClass();
+                    if ($pclass !== null) {
+                        return array(true, true, $pclass->getName(), $rmeth, $name);
+                    }
+                }
+
+                $docblock = $rmeth->getDocComment();
+                $annotations = $this->parseAnnotations($docblock);
+
+                if (!isset($annotations['param'][0])) {
+                    return array(true, true, null, $rmeth, $name);
+                }
+
+                list($type) = explode(' ', trim($annotations['param'][0]));
+
+                return array(true, true, $type, $rmeth, $name);
+            } elseif (!$rc->hasProperty($name)) {
+                return array(true, false, null, null, $name);
+            }
+        }
+
         if ($rc->hasProperty($name)) {
             $rprop = $rc->getProperty($name);
 
@@ -296,52 +349,21 @@ class JsonMapper
                 $annotations = $this->parseAnnotations($docblock);
 
                 if (!isset($annotations['var'][0])) {
-                    return array(true, true, null, null);
+                    return array(true, true, null, null, $name);
                 }
 
                 //support "@var type description"
                 list($type) = explode(' ', $annotations['var'][0]);
 
-                return array(true, true, $type, null);
-            }
-        }
-
-        // Parameter could not be directly set, so lets go for setter methods
-        $setter = 'set' . ucfirst($name);
-
-        if (!$rc->hasMethod($setter)) {
-            if ($rc->hasProperty($name)) {
+                return array(true, true, $type, null, $name);
+            } else {
                 //no setter, private property
-                return array(true, false, null, null);
-            }
-            //no setter, no property
-            return array(false, false, null, null);
-        }
-
-        $rmeth = $rc->getMethod($setter);
-        if (!$rmeth->isPublic()) {
-            return array(true, false, null, null);
-        }
-
-        $rparams = $rmeth->getParameters();
-
-        if (count($rparams) > 0) {
-            $pclass = $rparams[0]->getClass();
-            if ($pclass !== null) {
-                return array(true, true, $pclass->getName(), $rmeth);
+                return array(true, false, null, null, $name);
             }
         }
 
-        $docblock    = $rmeth->getDocComment();
-        $annotations = $this->parseAnnotations($docblock);
-
-        if (!isset($annotations['param'][0])) {
-            return array(true, true, null, $rmeth);
-        }
-
-        list($type) = explode(' ', trim($annotations['param'][0]));
-
-        return array(true, true, $type, $rmeth);
+        //no setter, no property
+        return array(false, false, null, null, $name);
     }
 
     /**
@@ -353,7 +375,7 @@ class JsonMapper
      * @param object $object Object to set property on
      * @param string $name   Property name
      * @param mixed  $value  Value of property
-     * @param object $setter The setter to use, null if no setter
+     * @param ReflectionMethod $setter The setter to use, null if no setter
      *                       should be used
      *
      * @return void

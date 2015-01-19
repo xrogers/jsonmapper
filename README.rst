@@ -154,14 +154,7 @@ Property type documentation
 ``JsonMapper`` uses several sources to detect the correct type of
 a property:
 
-#. ``@var $type`` docblock annotation of class properties::
-
-    /**
-     * @var \my\application\model\Contact
-     */
-    public $person;
-
-#. If the property does not exist, the setter method
+#. First the setter method
    (``set`` + ``ucfirst($propertyname)``) is inspected
 
    #. If it has a type hint in the method signature, this type used::
@@ -174,6 +167,13 @@ a property:
          * @param Contact $person Main contact for this application
          */
         public function setPerson($person) {...}
+
+#. If setter is not found, ``@var $type`` docblock annotation of class properties are inspected::
+
+    /**
+     * @var \my\application\model\Contact
+     */
+    public $person;
 
 #. If all fails, the plain JSON data is set to the property
 
