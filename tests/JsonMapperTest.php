@@ -14,6 +14,7 @@ require_once 'JsonMapperTest/Broken.php';
 require_once 'JsonMapperTest/Simple.php';
 require_once 'JsonMapperTest/Logger.php';
 require_once 'JsonMapperTest/PrivateWithSetter.php';
+require_once 'JsonMapperTest/KeyMap.php';
 
 /**
  * Unit tests for JsonMapper
@@ -521,6 +522,20 @@ class JsonMapperTest extends \PHPUnit_Framework_TestCase
 
         $json   = '{"privatePropertyPrivateSetter" : 1}';
         $result = $jm->map(json_decode($json), new PrivateWithSetter());
+    }
+
+    /**
+     * Test for "::_json_key_map"
+     */
+    public function testKeyMapSimpleInteger()
+    {
+        $jm = new JsonMapper();
+        $sn = $jm->map(
+            json_decode('{"broken_id_key":12345}'),
+            new JsonMapperTest_KeyMap()
+        );
+        $this->assertInternalType('integer', $sn->id);
+        $this->assertEquals(12345, $sn->id);
     }
 }
 ?>
